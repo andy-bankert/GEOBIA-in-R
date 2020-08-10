@@ -1,0 +1,272 @@
+closeAllConnections()                                                                                                   # Close Everything
+rm(list=ls())                                                                                                           # Remove all saved variables
+
+#################################################
+##### Variables to Change with Study Site #######
+#################################################
+TrainingName = 'JANOS'
+Site = 'JANO'                                      ## Site Code
+Site_Name = 'Janos'                                ## Site Name
+File_name = 'JANO_2018Jan_RGB_Northwest'                                                                                # Insert Name of File (StudySite_YearMonth_RGB_Subsite)
+File_path = paste('F:\\winter\\Field Sites\\JANO\\projects\\2017\\',File_name,'\\3_dsm_ortho',sep = '')              # File path to Orthomosaic folder
+fpath = paste('F:\\winter\\Field Sites\\JANO\\projects\\2017\\',File_name,'\\4_index',sep = '')                      # File path to Reflectance Map folder
+training_loc = paste('C:\\Users\\andy.bankert\\Desktop\\R Scripts\\Training Segments RGB\\')
+
+classes = c("Amaranth", "Bareground", "Ephedra", "Grass", "krat", "Mesquite", "Rocks", "Shadow", "Tobosa", "Tumbleweed", "Yucca", "OtherShrub")
+work_direct = "C:/Users/andy.bankert/Desktop/R Scripts"
+################################################
+################################################
+################################################
+
+numtree = c(100,500, 1000,2000,4000,8000)                 # Number of trees in Random Forest (can be single number or multiple numbers if testing accuracy)                                                                    # Set the number of trees equal to 4,000
+trys = c(2,3,5,10,12)                                     # Number of variables to test at each node (can be single number or multiple numbers if testing accuracy)           
+
+################################################
+##################################################
+
+setwd("C:\\Users\\andy.bankert\\Desktop\\R Scripts") # Set Work Directory                                               # Set work directory
+Segment_Location = paste("C:\\Users\\andy.bankert\\Desktop\\R Scripts\\Training Segments RGB")
+Digitized_Tile_Location = paste("C:\\Users\\andy.bankert\\Desktop\\Drone Work\\Digitizing\\Tiles to Digitize\\")
+#######
+# Shape File location folder must be Digitized_Tile_Location\\SITE Training Data
+#######
+
+library(sp) 
+library(spatial)
+library(raster)                                                                                                         #Import Library
+library(tictoc)
+library(rgdal)
+library(gdalUtils)
+library(stringr)
+library(matrixStats)
+library(rgeos)
+library(randomForest)
+library(foreach)
+library(doSNOW)
+library(doParallel)
+
+cl<-makeCluster(11)                                                       # Create Cluster, change the 11 to your number of CPU cores - 1
+registerDoSNOW(cl)
+
+####### Enter Resolutions ##########
+
+ResMat = c(0.15)                                                  # Enter resolutions of Random Forest model to create
+
+###################################
+
+for(res in 1:length(ResMat)) {                                            # Start for loop to iterate each resolution.  This loop just segments the digitized tiles and stores them to create Random Forest model later.
+
+##########################  
+##### Parameter List #####
+##########################  
+  
+ShrubThresh = 0.20                                                        # Enter minimum shrub height in meters
+Smallness = 0.4                                                           # Enter minimum length of the side of a square that can encompass the smallest object you want identified in meters 
+MaxDist = 12                                                              # Enter the maximum object radius in meters
+MaxObjects = 20000000                                                     # Maximum number of segmented objects per tile, default to 20 million
+ShrubEdgeThresh = 0.5                                                     # Enter the percentage of the minimum shrub height that can be included in a shrub (number 0 - 1) 
+rfm = paste(Site,'_RandomForest.rda', sep = '')                                      # Paste name of Random Forest Model
+
+Digitized_Location = paste(Digitized_Tile_Location, Site, sep = '')
+                                                                          # Paste location of Training Tiles
+
+##############################
+##### End Parameter List #####
+##############################
+
+
+Resolution = ResMat[res]                                                  # Resolution of output data in meters
+
+ortho_list = list.files(path = Digitized_Location, pattern = "Ortho")     # Create list of Orthomosaic Tiles
+dtm_list =  list.files(path = Digitized_Location, pattern = "DTM")        # Create list of DTM Tiles
+dsm_list =  list.files(path = Digitized_Location, pattern = "DSM")        # Create list of DSM Tiles
+
+dsm_list = dsm_list[!str_detect(dsm_list, pattern = ".xml")]
+dsm_list = dsm_list[!str_detect(dsm_list, pattern = ".ovr")]
+ortho_list = ortho_list[!str_detect(ortho_list, pattern = ".xml")]        # Remove files from Ortho_list, DTM_list, and DSM_list that were generated in ArcMap 
+ortho_list = ortho_list[!str_detect(ortho_list, pattern = ".ovr")]
+dtm_list = dtm_list[!str_detect(dtm_list, pattern = ".xml")]
+dtm_list = dtm_list[!str_detect(dtm_list, pattern = ".ovr")]
+
+
+GSD = res(raster(paste(Digitized_Tile_Location,Site,'\\',dsm_list[1], sep = '')))[1]        # Get ground sampling distance in meters
+smallthresh = round((Smallness/Resolution)^2)                                                                           # Determine minimum object size (pixels)
+down_sample = round(Resolution/GSD,digits = 0)                                                                          # Determine the value used to downsample 
+MaxDist = round(MaxDist/(GSD*down_sample))                                                                              # Determine the maximum allowable distance from the seed pixel, in pixel 
+MaxPixels = round(pi*MaxDist^2)                                                                                         # Determine the maximum object size, in pixels
+
+trainingmatrix = matrix(NA,nrow = 120000, ncol = 15)                                                                    # Create a null matrix to store segment data into
+trainingmatrix[,1] = c(1:120000)                                                                                        # Fill first column of this matrix with all possible numbers
+
+load("TrainingSegmentImageRGB.Rdata")                                                                                   # Load image segment script
+
+foreach(ti = 1:length(ortho_list), .packages = c('raster','randomForest','matrixStats')) %dopar% {                      # Create parallel for loop for each training tile to be segmented
+
+   Training_Image_SegmentRGB(ti = ti)                                                                                   # Run segmentation script for each training tile
+
+   }                                                                                                                    # End parallel for loop, image segmentation loop     
+
+}                                                                                                                       # End loop segmenting images at each resolution                       
+
+stopCluster(cl)                                                                                                         # Stop parallel cluster
+##########################                                      ############################
+###########################                                    #############################
+############################                                  ##############################
+############################# End Image Segmentation Portion ###############################
+############################                                  ##############################
+###########################                                    #############################
+##########################                                      ############################
+
+
+##  ##  ##  ##  ##  ##  ##  ##  ##  ##  ##  ##  ##  ## 
+  ##  ##  Start Creating Random Forest Model  ##  ##
+##  ##  ##  ##  ##  ##  ##  ##  ##  ##  ##  ##  ##  ##
+
+reses = c(0.15)                                                                        # Enter resolution(s) of the Random Forest model(s) to be created, in meters                          
+
+for (ij in 1:length(reses)){                                                                # Start for loop with an iteration for each resolution
+
+alldata = list.files(path = Segment_Location, pattern = paste('resolution_', 100*reses[ij],'.tif', sep = ''))
+                                                                                            # Create list of all training tiles 
+
+classes = classes                                                                           # Import classes used in Random Forest model
+big_classes = c("BareGround5", "Grasses")                                                # Identify classes that digitization cannot fully circle, these classes are usually very large and contiguous  
+which_big_classes = which(classes %in% big_classes)                                         # Get indices of the big classes in the classes vector      
+vector = c("a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p")[1:length(classes)]        # Create vector with a letter corresponding to each class
+
+features_final = matrix(NA,nrow = 0, ncol = 15)                                             # Create null matrix for features of each segment
+class_list_final = matrix(NA,nrow = 0, ncol = 1)                                            # Create null matrix for classes
+
+getmode <- function(v) {                                                                    # Create a function for determining the mode of a dataset.  This was copied from elsewhere.
+  uniqv <- unique(v)
+  uniqv <- uniqv[!is.na(uniqv)]
+  uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+#########################################
+############# J loop ####################
+#########################################
+
+for (j in 1:length(alldata)){                                                             # Create a for loop to pull data from each training tile
+print(j)  
+tile = raster::stack(paste(training_loc,alldata[j],sep = ''))
+                                                                                          # Import segmented tile raster
+
+testmap = tile[[1]]*0                                                                     # Create a blank raster corresponding to the training tile 
+testmap[1:length(testmap)] = c(1:length(testmap))                                         # Create a vector corresponding to each index of the training tile raster
+plist = c(1:length(tile[[1]]))                                                            # Create a vector with an entry for each pixel
+plist = cbind(plist,matrix(NA,nrow = length(tile[[1]]), ncol = 1))                        # Add an empty column to the previous vector
+tm = testmap*0                                                                            # Create a blank vector for each pixel                                                                           
+working = tile[[1]]*0                                                                     # Create a blank raster of the training tile
+
+ext = extent(tile)                                                                        # Calculate the extents of the training tile
+for (i in 1:length(classes)){                                                             # Start a for loop to import the shape file for each class
+  shp = readOGR(paste(Digitized_Tile_Location,Site,' Training Data', sep = ''), layer = paste(classes[i],'_',TrainingName, sep = ''))
+  shp = crop(shp, ext)                                                                    # Import the shape file for a class and crop it to the extent of the training tile
+  if(length(shp) == 0){}else{                                                             # If this class doesn't exist on the training tile, move to the next class
+  tm[unlist(testmap[shp])] = i                                                            # Set pixels overlapping with the class shapefile to the corresponding class value
+  plist[unlist(testmap[shp]),2] = i                                             
+  print(i)
+  }}
+
+
+imsegs = tile[[1]]                                                                        # Create a raster with the image segments for the training tile
+plist = cbind(plist,as.vector(imsegs))                                                    # Concatenate vectors with pixel ID, class ID, and image segment ID
+upl = unique(plist[,3])                                                                   # Create list of image segment IDs
+trainids = matrix(NA, nrow = length(upl), ncol = 3)                                       # Create a blank matrix with a row for each image segment
+
+
+
+for (k in 1:length(upl)){                                                                 # Create a for loop for each image segment ID
+  
+  aa = plist[which(plist[,3] == plist[upl[k]]),2]                                         # Identify class identies of pixels that belong to the image segment being analyzed
+  bb = length(aa)                                                                         # Find size of current image segment being analyzed    
+  aa = aa[!is.na(aa)]                                                                     # Remove pixels that were not identified as any class during digitization
+  
+  
+  trainids[k,] = c(k,upl[k],getmode(aa))                                                  # Fill in matrix with Image Segment ID, Modified Image Segment ID, and class with the most pixels identified in the segment
+  
+  if(length(aa) > 0){                                                                     # Only evaluate this segment if at least one pixel is identified as a class
+    if(getmode(aa) %in% which_big_classes){                                               # Evaluate whether the dominant class is a large class (grasses or bare ground)
+      if(length(which(aa == getmode(aa)))/bb > 0.5){nul = 0}else{                         # If more than 50% of the pixels in the segment belong to the dominant class, identify the whole segment as the dominant class
+      if(length(which(aa == getmode(aa))) < 5){                                           # If both fewer than 50% of the pixels and fewer than 5 pixels in the segment belong to the dominant class, do not identify this segment as any class
+        trainids[k,3] = NA
+      }}
+    }else{                                                                                # If the dominant class is not a large class (grasses or bare ground)
+      if((length(which(aa == getmode(aa)))/bb) >0.6){ trainids[k,3] = getmode(aa)}else{   # If more than 60% of the pixels belong to the dominant class, identify the entire segment as this class
+        trainids[k,3] = NA                                                                # Otherwise, do not assign this segment to any class  
+      }
+    }
+  }else{nul = 0}                                                                          # Do nothing if no pixels correspond to any class
+  if (round(k/1000,0)*1000 == k){print(k)}
+}                                                                                         # End the loop once all image segments have been tested
+
+trainids = matrix(trainids[!is.na(trainids[,3])], ncol = 3)                               # Remove image segments that did not correspond to any class, and keep only those that got assigned to a class
+
+tiledf = as.data.frame(tile)                                                              # Turn the imported segmented tile with all the features into a dataframe
+
+features = matrix(NA,nrow = dim(trainids)[1], ncol = dim(tile)[3])                        # Create a blank feature matrix for each image segment that got classified 
+class_list = matrix(NA,nrow = dim(trainids)[1], ncol = 1)                                 # Create a blank matrix for each image segment that got classified
+
+for (k in 1:dim(trainids)[1]){                                                            # Start a for loop for each image segment that got classified
+  features[k,] = as.numeric(tiledf[which(plist[,3] == trainids[k,1])[1],])                # Copy the features (mean red, green, blue, hue, saturation, intensity, etc.) for the image segment into the feature matrix
+  features[k,2] = trainids[k,3]                                                           # Set the second column equal to the class ID
+  class_list[k] = classes[trainids[k,3]]                                                  # Put the name of the class into the correct spot in the class_list variable
+  if (round(k/100,0)*100 == k){print(k)}
+}                                                                          
+
+features_final = rbind(features_final,features)                                           # Combine the feature matrix with the feature matrix from previous tiles
+class_list_final = rbind(class_list_final, class_list)                                    # Combine the class list with class lists from previous tiles
+
+
+for (i in 1:length(classes)){                                                             # Create a for loop that iterates through each class
+  aa = trainids[which(trainids[,3] == i)]                                                 # Identify which pixels got classified in this class
+  for (kj in 1:length(aa)){                                                               # Loop through each pixel in this class
+    working[which(plist[,3] == aa[kj])] = i                                               # Set the pixels in a blank raster equal to the value of the class they are assigned to (if they are assigned to a class) 
+  }}
+plot(working)                                                                             # Plot and write this raster to verify that the script is working properly at identifying                                                    
+writeRaster(working, filename = paste('working',j,'_',reses[ij],'.tif', sep = ''), format = 'GTiff', overwrite = TRUE)
+print(paste("wrote raster",j))
+}                                                                                         # End loop iterating through each training tile
+
+
+###########################################
+############### End J Loop ################
+###########################################
+
+
+header_train = c("ObjectID", "class", "MeanRed", "MeanBlue", "MeanGreen", "MeanRelElev", "nfRelElev", "MeanBinShrub", "Size", "Intensity", "Hue", "Saturation", "ExGreen","Slope", "Size1")
+                                                                                          # Create a vector with list of features
+colnames(features_final) = header_train                                                   # Assign these features as column headers in the final features matrix
+
+features_final = as.data.frame(features_final)                                            # Turn final features matrix into a dataframe
+
+features_final$Size1 = features_final$Size                                                # Duplicate the size feature into a second size column
+
+features_final$class = as.factor(class_list_final)                                        # Import the name of each assigned class into the dataframe, this replaces the class number with the class name
+
+
+#train = sample(nrow(features_final), 0.9*nrow(features_final), replace = FALSE)           # Use 90% of the image segments to create the Random Forest Model
+#TrainSet = features_final[train,]                                                         # Identify these 90% as the training dataset 
+#ValidSet = features_final[-train,]                                                        # Identify the other 10% as the validataion set
+
+                                                                            # Set the maximum number of splits at each node to 10
+errormat = matrix(NA,nrow = length(numtree)*length(trys), ncol = 3)                       # Create blank error matrix (used for finding optimum values for numtree and trys)
+
+for (i in 1:length(numtree)){                                                             # Create two loops if you are varying numtree and trys
+  for (j in 1:length(trys)){
+RF_model = randomForest(class ~ MeanRed + MeanBlue + MeanGreen + MeanRelElev + nfRelElev + MeanBinShrub + Intensity + Hue + Saturation + Size + ExGreen + Slope , data = features_final, mtry = trys[j], ntree = numtree[i], importance = TRUE)
+                                                                                          # Create a Random Forest Model using the features in the feature matrix and the assigned classes
+errormat[(i-1)*length(trys)+j,] = c(numtree[i],trys[j], mean(RF_model$err.rate[,1]))    # Print the error in the model for each iteration of numtree and trys
+print(errormat)
+}}
+
+#predictValid = predict(RF_model,ValidSet, type = "class")                               # Use the validataion dataset to see how well the model preforms
+#acc = (predictValid == ValidSet$class)                                                    # Calculate the accuracy of the model whem predicting the validation set
+#print(mean(acc))
+
+setwd(work_direct)
+save(RF_model, file = paste(Site,'_RandomForest_',reses[ij],'.rda', sep = ''))           # Save the Random Forest Model
+}                                                                                         # End the loop iterating through each resolution
+
+################
