@@ -1,0 +1,319 @@
+
+SegmentImageFinal = function(ti){
+  
+  ########### List of Assumptions ###############
+    #  1. DSM and Orthomosaic cover the same area and are on the same resolution
+    #  2. All DSM elevations are above sea level (or 0)
+    #  3. No objects have > 100 m prominence above the ground
+  
+  
+  
+  
+  ########## Bring in Pix4d Data #################
+  
+  mosaic = raster::stack(paste(fpath,'\\reflectance\\tiles/',ortho_list[ti], sep = ''))        # Read mosaic raster
+  dsm = raster(paste(File_path,'\\1_dsm\\tiles/',dsm_list[ti], sep = ''))                      # Read DSM raster
+  dtm = raster(paste(File_path,'\\extras\\dtm/',File_name,'_dtm.tif', sep = ''))               # Read DTM raster   #"DTM_tile.tif")
+  
+  ########## Align and Resample Rasters ###############
+  
+    extent = (extent(dsm))                                                                     # get extent of DSM tile
+    dtm = crop(dtm,extent)                                                                     # crop DTM to correct extent
+    gtv = (getValues(is.na(dsm)))                                                              # Get NA values if tile is on the edge
+    dsm_s = aggregate(dsm,fact=down_sample,method = "")                                        # Resample DSM based on down_sample parameter
+    mosaic_s = aggregate(mosaic, fact = down_sample, method = "")                              # Resample Orthomosaic based on down_sample parameter
+    mosaic_s = round(mosaic_s/255, digits = 3)                                                 # Normalize Orthomosaic values
+    #dsm_s[is.na(dsm_s)] = -100                                                                # Separate NA values
+    bad = if (mean(gtv) > 0.01){which.max((mosaic_s[[1]] + mosaic_s[[2]]) == 0)}else{matrix(NA, nrow = 0, ncol = 0)}          # Find locations of NA's for edge tiles
+    dtm_s =  resample(dtm,dsm_s,method="ngb", na.rm = TRUE)                                    # Resample DTM to DSM grid
+    dtm_s[bad] = -100                                                                          # Separate DTM values where DSM is NA
+    dsm_s[bad] = -100
+    mosaic_s[bad] = -100
+    mosaic = raster::stack(mosaic_s[[1]],mosaic_s[[2]],mosaic_s[[3]],dsm_s,dtm_s)              # Stack 3 color bands, dsm, and dtm
+    
+    
+rm("gtv","dtm","extent","dsm_s","bad","dtm_s")
+    ###########  Check for NA Values ###################
+    
+    if (minValue(is.na(dsm)) == 1){ShrubPlot = raster::stack(mosaic[[1]]*0,mosaic[[1]]*0,mosaic[[1]]*0)}else{    # Print blank raster if all values are NA
+    if (maxValue(mosaic[[1]]) <= 0){ShrubPlot = raster::stack(mosaic[[1]]*0,mosaic[[1]]*0,mosaic[[1]]*0)}else{
+    adjmat = matrix(c(1,NA,1,NA,NA,NA,
+                        NA,1,1,NA,NA,NA,
+                        1,1,0,1,1,1,
+                        NA,NA,1,1,NA,NA,
+                        NA,NA,1,NA,1,NA,
+                        NA,NA,1,NA,NA,1), ncol=6, byrow=TRUE)                                  # Create matrix for NA's in DTM
+    
+    if (maxValue(is.na(mosaic[[5]])) == 0){nul = 0}else{                                             # Go to next step if there are no NA values in DTM
+                                                                                      
+    na_list = which.max(is.na(mosaic[[5]]))                                                    # Find pixels that are NA in the DTM but have values for the DSM
+    if(max(is.na(mosaic[[1]][na_list])) == 0){na_list = na_list}else{na_list = 5}              # Create list of NA's if the tile is full, but don't create list of NA's if tile is an edge tile
+    for (l in 1:length(na_list)){ 
+      nebs = mosaic[[5]][adjacent(mosaic[[5]], cell = na_list[l], directions=adjmat, pairs = FALSE, include = FALSE)]    # Find adjacent DTM points
+      nebs = nebs[!is.na(nebs)]                                                                # Removes NA's so we can get a mean of nebs
+      mosaic[[5]][na_list[l]] = mean(nebs)}                                                    # New DTM value is the average of the neighboring cells without NA values
+    }  
+    mosaic[is.na(mosaic)] = -100                                                               # Separate NA values
+    
+    
+rm("adjmat","dsm")
+    
+    ###########  Create Extra Layers #####################  
+      
+    mosaic[[6]] = mosaic[[4]] - mosaic[[5]]                                                    # Create relative elevation layer
+    mosaic[[6]][mosaic[[6]] > 100] = 0                                                         # Set relative elevation of points with > 100 m prominence equal to 0                                                     
+    mosaic[[6]][mosaic[[6]]<0] = 0                                                             # Set points with negative relative elevation to 0
+    mosaic[[7]] = mosaic[[6]]                                                                  # Set up binary layer for points above/below Shrub Threshold 
+    mosaic[[7]][mosaic[[6]]>ShrubThresh] = 1                                                   # Set points with relative elevation above Shrub Threshold equal to 1
+    mosaic[[7]][mosaic[[6]]<ShrubThresh] = 0                                                   # Set points with relative elevation below Shrub Threshold equal to 0
+    mosaic[[8]] = (mosaic[[1]]+mosaic[[2]]+mosaic[[3]])/3                                      # Create layer for intensity
+    mosaic[[9]] = 1-(min(mosaic[[1]],mosaic[[2]],mosaic[[3]])/mosaic[[8]])                     # Create layer for saturation
+    bmg = mosaic[[3]]-mosaic[[2]]                                                              # Start process for calculating hue    
+    bmg[bmg>0]= 1                                                                              # If blue > green, make hue values between 180 and 360
+    bmg[bmg<=0] = -1
+    zero_hue = (mosaic[[1]] == mosaic[[2]]) & (mosaic[[1]] == mosaic[[3]])                     # Find locations where R = G = B, thus hue equals 0
+    red = mosaic[[1]]
+    mosaic[[10]] = acos(((red-mosaic[[2]]) + (red - mosaic[[3]]))/(2*sqrt((red-mosaic[[2]])^2+(red-mosaic[[3]])*(mosaic[[2]]-mosaic[[3]]))))*180/pi
+    mosaic[[10]] = (((180-mosaic[[10]])*bmg)+180)                                              # Create layer for hue
+    mosaic[[10]][zero_hue] = 0                                                                 # Set areas where hue is 0 to 0 since equation returns NaN
+    mosaic[[11]] = (2*mosaic[[2]]-mosaic[[1]]-mosaic[[3]])/mosaic[[8]]                         # Create layer for Excess Green Index
+    mosaic[[12]] = terrain(mosaic[[4]],opt='slope', unit='radians', neighbors=8)               # Create layer for slope
+    mosaic[is.na(mosaic)] = -100                                                               # Separate any remaining NA values
+rm("red","bmg","zero_hue","mosaic_s")                                                          # Remove red raster
+    
+##############  Set up initial conditions for start of loops ###############
+    
+
+seed = which.max(mosaic[[6]])                                                              # Create initial seed point at the highest relative elevation
+BinShrub = mosaic[[7]]                                                                     # Binary test of whether relative elevation of a pixel is above ShrubThresh as a variable raster
+adj = adjacent(BinShrub, cell = seed, directions=8, pairs = FALSE, include = TRUE)         # Find all King adjacent cells to seed point
+relel_test = mosaic[[6]]                                                                   # Relative elevation (DSM - DTM) variable raster
+relel_test[mosaic[[4]] == -100] = -10                                                      # Separate NA values in relel_test
+
+rgb_pix_list = cbind(1:length(BinShrub), as.vector(relel_test), as.vector(mosaic[[1]]), as.vector(mosaic[[2]]), as.vector(mosaic[[3]]), NA, as.vector(mosaic[[1]]/mosaic[[2]]))
+rgb_pix_list[(which(rgb_pix_list[,7] < 1.22)),7] = 0
+rgb_pix_list[(which(rgb_pix_list[,7] >= 1.22)),7] = 1
+
+pl = as.vector(matrix(NA, nrow =1, ncol = length(BinShrub)))                               # Create a vector to use for correlating each pixel ID with an object ID     
+smalls = matrix(data=NA,nrow=1,ncol=length(BinShrub))                                      # Create null matrix used to keep track of which objects are too small and have to be merged with larger ones
+ihsmat = cbind(c(1:length(BinShrub)), as.vector(mosaic[[10]]), as.vector(mosaic[[9]]), as.vector(mosaic[[8]]), as.vector(ceiling(mean(mosaic[[6]]-(ShrubEdgeThresh*ShrubThresh)))), as.vector(mosaic[[1]]/mosaic[[2]]))
+ihsmat = round(ihsmat, digits = 3)                                                         # Create a matrix with IHS and difference between relative elevation and minimum permissible shrub relative elevation values for each pixel
+
+mred = as.vector(mosaic[[1]])                                                              # Red raster as vector
+mblue = as.vector(mosaic[[3]])                                                             # Blue raster as vector
+mgreen = as.vector(mosaic[[2]])                                                            # Green raster as vector
+mrelel = as.vector(mosaic[[6]])                                                            # Relative elevation raster as vector
+mbinshrub = as.vector(mosaic[[7]])                                                         # Binary Shrub raster as vector
+mint = as.vector(mosaic[[8]])                                                              # Intensity raster as vector
+mhue = as.vector(mosaic[[10]])                                                             # Hue raster as vector
+msat = as.vector(mosaic[[9]])                                                              # Saturation raster as vector
+mexgreen = as.vector(mosaic[[11]])                                                         # Excess Green Index raster as vector
+mslope = as.vector(mosaic[[12]])
+
+rm("mosaic")
+    
+testmat = matrix(NA,nrow = length(BinShrub), ncol = 5)                                     # Create a null matrix that can store average IHS values for each object
+
+########## Start Image Segmentation  ##########################
+
+for (n in 1:length(BinShrub)){                                                                 # For loop that creates objects, should get broken before it reach a maximum value of the number of pixels in the tile
+
+  if (length(adj) > 0){         #assign(paste("cell",n, sep = ""), unique(aa))                 # If there are no untested adjacent pixels, print the object name and break the loop
+    aa = seed                                                                                  # Start a list of all pixels included in the object 
+    bss = BinShrub[seed]
+    bb = matrix(NA,nrow = 0, ncol = 0)                                                         # Start a list of pixels tested and rejected from the object
+    
+    for (j in 1:1000000){                                                                      # For loop that grows the object, breaks once all adjacent pixels have been rejected  
+      
+      t2 = ((rgb_pix_list[seed,3] - rgb_pix_list[adj,3])^2 + (rgb_pix_list[seed,4] - rgb_pix_list[adj,4])^2 + (rgb_pix_list[seed,5] - rgb_pix_list[adj,5])^2)^0.5
+      t2 = matrix(t2, nrow = length(adj), ncol = 1)                                              # Create test matrix with differences of IHS values between seed point and adjacent cells
+      t2 = cbind((5*bss - ceiling(relel_test[adj]-ShrubThresh*ShrubEdgeThresh)), t2)  
+      t2 = rowSums(cbind(t2[,1] < 4.5 ,t2[,2] < 0.085)) > 1.5                                    # Test differences in elevation as well as color
+      
+      aa = c(aa, adj[which(t2 == TRUE)])                                                         # Include pixels that have all trues in t2
+      bb = c(bb, adj[which(t2 == FALSE)])                                                        # Exclude pixels that have at least one false in t2
+      
+      adj = adjacent(BinShrub, cells = adj[which(t2 == TRUE)], directions=4, pairs = FALSE, include = FALSE)         # Create list of adjacent pixels
+      adj[which(adj %in% which(is.na(rgb_pix_list[,6]) == 0))] = NA                                  # Exclude pixels that are already included in another object 
+      adj[which(adj %in% aa)] = NA                                                               # Exclude pixels that are already included in this object
+      adj[which(adj %in% bb)] = NA                                                               # Exclude pixels that have already been rejected from this object
+      adj <- adj[!is.na(adj)]                                                                    # Remove excluded pixels in the list of adjacent pixels
+      
+      if (length(adj) == 0){                                                                     # If no adjacent pixels are included in the list, finish the object
+        break}
+    } 
+
+    aa = unique(aa)                                                                              # Only include unique index value                                                                    
+    if(length(aa) < smallthresh){smalls[n] = n}                                                  # Identify which objects are too small and will have to be merged with larger objects later
+    if(length(aa) == 1){rgb_pix_list[seed,6] = n                                                 # Identify single pixel objects to update textmat outside of the for loop
+    rgb_pix_list[seed,2] = -2
+    #pl[seed] = n
+    }else{
+      testmat[n,] =  colMeans(ihsmat[aa,2:6])                                                    # Calculate average I-H-S and relel values for merging later, multiple rows
+      rgb_pix_list[aa,6] = n                                                                     # Create list of pixels that have already been tested
+      rgb_pix_list[aa,2] =  -1}                                                                  # Set relel to a value below 0 so that point won't be used as a seed point again
+    
+    
+    #pl[aa] = n                                                                                  # Give each pixel index the ID number of 
+  }else{
+    rgb_pix_list[seed,2] =  -2                                                                  # For seeds with no free adjacent pixels, set relel to -1             
+    rgb_pix_list[seed,6] =  n                                                                   # Identify single pixel objects to update textmat outside of the for loop
+    #pl[seed] = n                                                                               # Give object ID to this pixel
+    smalls[n] = n                                                                               # Include this object in the length of small objects that need to be merged
+  }
+  
+  seed = which.max(rgb_pix_list[,2])[1]                                                         # Define next seed point as the pixel with the highest elevation that hasn't been assigned to an object
+  
+  
+  if(rgb_pix_list[seed,2] < -0.5){                                                              # Break loop if no relative elevations are positive (either NA values in DSM or all values have been tested)
+    break}
+  
+  adj = adjacent(BinShrub, cell = seed, directions=8, pairs = FALSE, include = FALSE)           # Calculate adjacent pixels to the seed pixel
+  adj[which(adj %in% which(is.na(rgb_pix_list[,6]) == 0) )] = NA                                     # Identify pixels already assigned to an object  
+  adj <- adj[!is.na(adj)]                                                                       # Remove pixels already assigned to an object
+}
+
+
+pl = rgb_pix_list[,6]
+
+rm("adj", "seed", "aa", "bb", "t2", "relel_test")
+
+#####################  End Initial Image Segmentation  #####################
+testmat = testmat[1:n,]                                                                        # Remove empty rows of testmat
+
+testmat[pl[which(rgb_pix_list[,2] == -2)],] = ihsmat[which(rgb_pix_list[,2] == -2),2:6]    
+
+
+testmat = matrix(cbind(c(1:dim(testmat)[1], testmat)), ncol = 6)                               # Add a column for object ID
+smalls = smalls[!is.na(smalls)]                                                                # Create list of smalls by removing NA values
+
+if(length(smalls) == 0){}else{                                                                 # Only merge small objects if there are small objects to merge
+  
+  for (i in 1:length(smalls)){                                                                 # Loop through all objects that are too small
+    if(length(unique(which(pl == smalls[i]))) > smallthresh){}else{                            # Test if object is small enough for merging (it can be called too small but grow big enough of other objects are merged into it)
+      neighbor = unique(pl[adjacent(BinShrub,which(pl == smalls[i]), directions = 8, pairs = FALSE, include = FALSE)])
+      neighbor[neighbor == smalls[i]] = NA                                                     # Create a list of adjacent objects
+      neighbor = neighbor[!is.na(neighbor)]                                                    # Remove this object from the list of adjacent objects
+      
+      if(length(neighbor) == 0){nul = 0}else{
+        if(length(neighbor) == 1){
+          pl[which(pl == smalls[i])] = neighbor[1]                                               # Merge object into neighbor if there is only one neighbor
+        }else{
+          seedtest = testmat[smalls[i],2:6]                                                      # Find properties of the small object
+          nebtest = testmat[neighbor,]                                                           # Find properties of the adjacent objects
+          goodness = colSums(rbind(abs(nebtest[,2] - seedtest[1])/60, (abs(nebtest[,3] - seedtest[2]))/(range(testmat[,3])[2] - range(testmat[,3])[1]), abs(nebtest[,4] - seedtest[3])/(range(testmat[,4])[2] - range(testmat[,4])[1]), abs(nebtest[,5] - seedtest[4]), abs(nebtest[,6] - seedtest[5])/2))
+          bestneb = neighbor[which(goodness == min(goodness))][1]                                # Find adjacent object with the least amount of difference to the small object
+          pl[which(pl == smalls[i])] = bestneb                                                   # Merge the small object with the neighboring object that is the most similar
+        }}}}
+}
+
+rm("smalls","testmat","rgb_pix_list", "ihsmat")
+
+
+oblist = unique(pl)                                                                            # Create a list of each object ID
+oblist = oblist[!is.na(oblist)]
+                                                                                               # Create a header row for the data frame we are about to create
+header = c("ObjectID", "class", "MeanRed", "MeanBlue", "MeanGreen", "MeanRelElev", "nfRelElev", "MeanBinShrub", "Size", "Intensity", "Hue", "Saturation", "ExGreen", "Slope")
+feature_matrix = matrix(data=NA,nrow=length(oblist),ncol=length(header))                       # Create a blank matrix for the data frame we are about to create
+
+pl2 = as.vector(matrix(NA,nrow = 1, ncol = length(pl)))                                        # Create new vector for object ID for each pixel
+
+for (i in 1:length(oblist)){                                                                   # For loop with characteristics of each object    
+  pxls = which(pl == oblist[i])                                                                # Identify pixels associated with each object
+  pl2[pxls] = i                                                                                # Renumber objects starting with 1
+  
+  feature_matrix[i,1] = i                                                                      # Object ID
+  feature_matrix[i,2] = 0                                                                      # Blank column to be used for class later
+  feature_matrix[i,3] = mean(mred[pxls])                                                       # Mean red value
+  feature_matrix[i,4] = mean(mblue[pxls])                                                      # Mean blue value
+  feature_matrix[i,5] = mean(mgreen[pxls])                                                     # Mean green value
+  feature_matrix[i,6] = mean(mrelel[pxls])                                                     # Mean relative elevation
+  feature_matrix[i,7] = quantile(mrelel[pxls], probs = 0.95)                                   # 95% relative elevation
+  feature_matrix[i,8] = mean(mbinshrub[pxls])                                                  # Percent of pixels above the Shrub Threshold
+  feature_matrix[i,9] = length(pxls)                                                           # Object size (pixels)
+  feature_matrix[i,10] = mean(mint[pxls])                                                      # Mean intensity
+  feature_matrix[i,11] = mean(mhue[pxls])                                                      # Mean hue
+  feature_matrix[i,12] = mean(msat[pxls])                                                      # Mean saturation
+  feature_matrix[i,13] =  mean(mexgreen[pxls])                                                 # Mean Excess Green Index
+  feature_matrix[i,14] = max(mslope[pxls])                                                     # Maximum slope in the object
+
+  if(feature_matrix[i,14] < -10){feature_matrix[i,14] = 0}                                     # Replace negative slopes with 0
+  }
+
+colnames(feature_matrix) = header                                                              # Create column headers for feature matrix
+objdata = as.data.frame(as.matrix(feature_matrix))                                             # Turn feature matrix into a data frame
+
+ShrubForest = predict(RFmodel,objdata,type = "class")                                          # Perform random forest based on feature matrix data frame and RF model
+objdata$class = ShrubForest                                                                    # Add RF class into data frame
+ShrubPlot = BinShrub*0                                                                         # Create blank raster
+
+SF = as.character(ShrubForest)                                                                 # Create vector of classes with RF classes
+
+for (i in 1:length(classes)){            
+  SF[which(SF == classes[i])] = i                                                              # Turn classes into numbers
+  }
+
+sl = as.vector(matrix(NA,nrow = 1, ncol = length(pl)))                                         # Create blank vector for each pixel
+for (i in 1:length(oblist)){  
+  sl[which(pl == oblist[i])] = as.numeric(SF[i])                                               # Assign each pixel a class ID 
+}
+
+ShrubPlot[1:length(BinShrub)] = sl[1:length(BinShrub)]                                         # Create raster map of class ID across the tile
+
+rm("pl","sl", "pxls")
+
+############## Merge Neighboring Objects of the Same Class ###########################
+
+for (i in 1:length(oblist)){
+  NebList = unique(pl2[adjacent(BinShrub, which(pl2 == i), directions = 8, pairs = FALSE, include = FALSE)])
+  NebList = NebList[!is.na(NebList)]                                                           # Create a list of neighbors for each object
+  NebTest = (SF[NebList] == SF[i])                                                             # Test whether neighbors are in the same class
+  
+  if (max(NebTest) == 0){next}                                                                 # If no neighbors have the same class, move on
+  lump = max(NebList[which(NebTest == TRUE)])                                                  # If some neighbors have the same class, find the highest object ID in this class
+  if (lump <= i){next}                                                                         # If the object being tested has the highest object ID, move on
+  
+  pl2[which(pl2 == i)] = lump                                                                  # Merge the object with the neighboring object with the same class and highest object ID
+}
+
+rm("NebList", "NebTest", "lump")
+
+oblist = unique(pl2)                                                                           # Create list of all object IDs
+oblist = oblist[!is.na(oblist)]                                                                # Remove NA from list of object IDs
+
+feature_matrix_final = matrix(data=NA,nrow=length(oblist),ncol=length(header))                 # Create blank matrix for object features
+pl3 = as.vector(matrix(NA,nrow = 1, ncol = length(pl2)))                                       # Create new vector for each pixel
+meanheight = BinShrub*0                                                                        # Create blank rasters for mean heigh and 95% heights
+nine_five_height = BinShrub*0
+meanred = BinShrub*0
+meanint = BinShrub*0
+meansat = BinShrub*0
+
+
+for (i in 1:length(oblist)){
+  pxls = which(pl2 == oblist[i])                                                               # Find pixels that are in each object
+  pl3[pxls] = i                                                                                # Final renumbering of the objects
+
+  meanred[pxls] = feature_matrix[i,3]
+  meanint[pxls] = feature_matrix[i,10]
+  meansat[pxls] = feature_matrix[i,12]
+  meanheight[pxls] = mean(mrelel[pxls])                                                        # Put mean relative elevation on the raster
+  nine_five_height[pxls] = quantile(mrelel[pxls], probs = 0.98)                                # Put 95% height on the raster
+}
+
+objids = BinShrub*0
+objids[1:length(objids)] = pl3[1:length(pl3)]
+
+ShrubPlot = raster::stack(ShrubPlot, meanheight, nine_five_height, objids)                     # Create final raster with classes, heights, and object IDs
+
+}}
+writeRaster(ShrubPlot[[1]], file.path('./ClassTiles', paste('tile',ti,'class_', Resolution*100, sep = '')), format = 'GTiff', overwrite = TRUE)    # Write relevant rasters
+writeRaster(ShrubPlot[[3]], file.path('./ClassTiles', paste('tile',ti,'height_', Resolution*100, sep = '')), format = 'GTiff', overwrite = TRUE)
+
+rm("ShrubPlot")
+#return(ShrubPlot)
+}
+
+
+save("SegmentImageFinal", file = "SegmentImageFinal.Rdata")
+
