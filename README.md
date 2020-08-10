@@ -1,2 +1,4 @@
 # GEOBIA-in-R
 A set of scripts in the program R to take orthomosaic from aerial imagery and create land cover maps. The program is set up to take orthomosaics and elevation maps generated from the program Pix4d, but it can be modified to work for any type of imagery and elevation maps.
+
+The program works in two stages.  The first develops a Random Forest Model based on training data and the second uses that Random Forest Model to classify an entire study site.  Each of these stages runs a parallel loop that is saved as a separate script.  The user should run each full 'Inner Loop' script first in R so the computer will save these functions as to the correct file.  Next, the user should run the 'Random Forest Generation' script which relies on training data provided by the user. Finally, the user should run the 'Classify Site' script to output cover type maps.
