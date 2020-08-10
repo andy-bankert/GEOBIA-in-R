@@ -1,0 +1,159 @@
+closeAllConnections()
+rm(list=ls())
+#dev.off()
+
+################### Parameter List ########################
+
+site = 'JANOS'                                                                                                        # Name of Site
+File_name = 'MARF_2018Feb_RGB_South'                                                                                  # Name of Pix4d file folder
+File_path = paste('F:\\winter\\Field Sites\\',site,'\\Projects\\2017_18\\',File_name,'\\3_dsm_ortho',sep = '')        # Path to Pix4d orthomosaic
+fpath = paste('F:\\winter\\Field Sites\\',site,'\\Projects\\2017_18\\',File_name,'\\4_index',sep = '')                # Path to Pix4d reflectance maps
+
+work_dir = paste("C:\\Users\\andy.bankert\\Desktop\\R Scripts")                                                       # Set Work Directory
+tile_folder = paste("C:\\Users\\andy.bankert\\Desktop\\R Scripts\\ClassTiles")                                        # Folder you want to write your output maps to
+temp_folder = paste("C:/Users/andy.bankert/AppData/Local/Temp")                                                       # Folder where computer writes temporary files to
+
+tile_loop = paste("SegmentImageFinal.Rdata")                                                                          # Name of loop for analyzing each tile
+no_cores = 11                                                                                                         # Enter the number of cores you want to use on your computer
+Shrub_Threshold = 0.15                                                                                                # Prominence Parameter: objects with seed pixels above and below this threshold are treated differently in image segmentation (meters)                                                                                              
+Minimum_Object_Size = 0.3                                                                                             # Minimum length of the size of a square object (meters)
+Analysis_Resolution = c(0.15)                                                                                         # Resolution (meters)  NOTE: multiple resolutions can be run in this model
+Random_Forest_Prefix = paste(site,'_RandomForest_', sep = '')                                                         # Name of Random Forest Model                 
+class_list = c("BareGround5","Grasses","Salsola","Shadow","Shrub","Yucca")                                            # List of classes at this particular site
+  
+### VACO: c("Hilaria", "Mezquite", "Opuntia", "OtrosArbustos", "Pasto", "Suelo", "Yucca", "Shadow")                   # Store the list of classes at other sites
+### CUZA: c("Bareground","Grass","GreenForb","Juniper","OtherShrub","Shadow","Yucca")
+### Janos: c("Amaranth", "Bareground", "Ephedra", "Grass", "krat", "Mesquite", "Rocks", "Shadow", "Tobosa", "Tumbleweed", "Yucca", "OtherShrub")  
+
+############### End Parameter List ###########################
+
+library(sp) 
+library(spatial)
+library(raster)                                                                                                       #Import Library
+library(tictoc)
+library(rgdal)
+library(gdalUtils)
+library(stringr)
+library(matrixStats)
+library(randomForest)
+library(foreach)
+library(doSNOW)
+library(doParallel)
+cl<-makeCluster(11)                                                                                                  # Create a cluster
+registerDoSNOW(cl)
+
+reses = Analysis_Resolution                                                                                          # Define resolution
+
+for (ij in 1:length(reses)){                                              # For loop for each resolution, if only one resolution is chosen, this loop only runs once
+
+setwd(work_dir)                                                           # Set Work Directory
+  
+ShrubThresh = Shrub_Threshold                                             # Min shrub height in m
+MaxObjects = 20000000                                                     # Maximum number of segmented objects per tile, set this number much higher than you would ever expect for a tile.
+Smallness = Minimum_Object_Size                                           # Minimum square object size length in meters 
+Resolution = reses[ij]                                                    # Resolution of output data in meters
+ShrubEdgeThresh = 0.5                                                     # Ratio to ShrubThresh that can be included in shrubs
+rfm = paste(Random_Forest_Prefix, reses[ij], '.rda', sep = '')            # Paste name of Random Forest Model
+classes = class_list                                                      # Identify classes for classification
+
+             
+                                                                          
+
+
+
+
+
+dtm_list = list.files(path = paste(File_path,'\\extras\\dtm', sep = ''), pattern = "tif")                 # Create DTM List
+dtm_list = dtm_list[!str_detect(dtm_list, pattern = ".xml")]
+dtm_list = dtm_list[!str_detect(dtm_list, pattern = ".ovr")]                                              # Remove extra DTM files created by ArcGIS
+dsm_list = list.files(paste(File_path,'\\1_dsm\\tiles', sep = ''), pattern = "tif")                       # Create DSM list
+dsm_list = dsm_list[!str_detect(dsm_list, pattern = ".xml")]
+dsm_list = dsm_list[!str_detect(dsm_list, pattern = ".ovr")]                                              # Remove extra DSM files created by ArcGIS
+ortho_list = list.files(path = paste(fpath,'\\reflectance\\tiles', sep = ''), pattern = "tif")            # Create Orthomosaic list
+ortho_list = ortho_list[!str_detect(ortho_list, pattern = ".xml")]
+ortho_list = ortho_list[!str_detect(ortho_list, pattern = ".ovr")]
+ortho_list = ortho_list[!str_detect(ortho_list, pattern = "noalpha")]                                     # Remove extra orthomosaic files created by ArcGIS
+
+GSD = res(raster(paste(File_path,'\\1_dsm\\tiles/',dsm_list[1], sep = '')))[1]                            # Ground sampling distance in meters
+smallthresh = round((Smallness/Resolution)^2)                                                             # Minimum object size (in pixels)
+down_sample = round(Resolution/GSD,digits = 0)                                                            # How much to downsample
+RFmodel = get(load(rfm))                                                                                  # Load Random Forest Model
+
+CP_List = matrix(NA,nrow = 0, ncol =0)
+for (i in 1:length(ortho_list)){
+  CP_List[i] = paste('ClassPlot',i,sep = '')                                                              # Create list of each tile
+}
+
+load("DroneMS_Individual_Tile_Loop.Rdata")                                                                # Load the individual tile loop
+
+ foreach(ti = 1:length(ortho_list), .packages = c('raster','randomForest','matrixStats')) %dopar% {       # Run the loop to analyze each tile (this loop take a long time depending on your resolution and number of tiles) 
+
+    SegmentImageFinal(ti = ti)
+ }  
+
+}
+
+
+setwd(tile_folder)                                          # Set New Work Directory
+
+all_classy = list.files(path = '.', pattern = paste('height_', Resolution*100, sep = ''))                 # Find all object height tiles
+all_classyclass = list.files(path = '.', pattern = paste('class_', Resolution*100, sep = ''))             # Find all object class tiles
+
+merger = raster(all_classy[1])                                                                            # Start creating merged raster for heights
+classmerge = raster(all_classyclass[1])                                                                   # Start creating merged raster for classes
+
+
+
+###########################   Script for Creating Tiles Ends Here #####################################
+
+############## NOTE: The next step may be done easier in a program such as ArcMap  ####################
+
+
+
+#############################                                             ##############################
+############################   Merge Individual Tiles into Large Raster    #############################   
+#############################                                             ##############################
+
+for (i in 2:345){                                                                                         # If number of tiles is >345, use 'for (i in 2:345){', otherwise use 'for (i in 2:length(classy)){'
+  merger = raster::merge(merger, raster(all_classy[i]), tolerance = 0.5)
+  print(i)
+}
+writeRaster(merger, filename = paste('CrownHeight',reses[ij]*100, '.tif',sep = ''), datatype = 'FLT4S', overwrite=TRUE)
+unlink(file.path("C:/Users/andy.bankert/AppData/Local/Temp", "Rtmp*"), recursive = T)
+rm(merger)
+
+merger = raster(all_classy[346])
+for (i in 347:length(all_classy)){        #length(all_classy)
+  merger = raster::merge(merger, raster(all_classy[i]), tolerance = 0.5)
+  print(i)
+}
+writeRaster(merger, filename = paste('CrownHeight_1_',reses[ij]*100, '.tif',sep = ''), datatype = 'FLT4S', overwrite=TRUE)
+unlink(file.path(temp_folder, "Rtmp*"), recursive = T)
+rm(merger)
+
+
+
+for (i in 2:345){   #length(all_classy)                                                                                                        # If number of tiles is >345, use 'for (i in 2:345){', otherwise use 'for (i in 2:length(classy)){'
+classmerge =  raster::merge(classmerge, raster(all_classyclass[i]), tolerance = 0.5)
+print(i)
+}
+writeRaster(classmerge, filename = paste('Classes',reses[ij]*100,'.tif', sep = ''), datatype = 'FLT4S', overwrite=TRUE)
+unlink(file.path(temp_folder, "Rtmp*"), recursive = T)
+rm(classmerge)
+
+classmerge = raster(all_classyclass[346])
+
+for (i in 347:length(all_classy)){
+  classmerge =  raster::merge(classmerge, raster(all_classyclass[i]), tolerance = 0.5)
+  print(i)
+}
+writeRaster(classmerge, filename = paste('Classes_1_',reses[ij]*100,'.tif', sep = ''), datatype = 'FLT4S', overwrite=TRUE)
+unlink(file.path(temp_folder, "Rtmp*"), recursive = T)
+rm(classmerge)
+
+
+
+
+
+
+stopCluster(cl)
